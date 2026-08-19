@@ -4,7 +4,7 @@ A complete setup for running **Qwen3.8-27B** locally on Apple Silicon with MLX,
 fast enough to actually work with. No internet, no API key, no per-token bill.
 Close the lid on a plane and it keeps going.
 
-**48 tokens/second on a laptop.** Two quantisations, one command to switch.
+**47 tokens/second on a laptop.** Two quantisations, one command to switch.
 Speculative decoding wired up. Scripts, launchers, and the measurements behind
 every number.
 
@@ -18,7 +18,7 @@ qwen-stop                                    # give the RAM back
 
 ## Why this exists
 
-A 27B model that answers at 48 t/s is past the threshold where local stops
+A 27B model that answers at 47 t/s is past the threshold where local stops
 being a demo. You can hand it a real codebase, let it run a long agent loop,
 and never once think about rate limits, context pricing, or whether the
 network is up.
@@ -36,7 +36,7 @@ Three things had to be true to get there, and each one took finding out:
    model whose own config asks for temperature 1.0. No warning, just quieter
    answers.
 
-Get all three right and an M5 Max does 34 t/s at 8-bit or 48 t/s at 4-bit. Get
+Get all three right and an M5 Max does 29 t/s at 8-bit or 47 t/s at 4-bit. Get
 them wrong and you get 15 t/s and wonder why local models feel sluggish.
 
 ---
@@ -47,8 +47,8 @@ them wrong and you get 15 t/s and wonder why local models feel sluggish.
 |---|---|
 | `qq "question"` | Ask the local model. Pipe files in. Streams. |
 | `qq -i` | Interactive chat |
-| `qwen-local-4` | Qwen Code (agentic) against the 4-bit, ~48 t/s |
-| `qwen-local-8` | Qwen Code against the 8-bit, ~30 t/s |
+| `qwen-local-4` | Qwen Code (agentic) against the 4-bit, ~47 t/s |
+| `qwen-local-8` | Qwen Code against the 8-bit, ~29 t/s |
 | `qwen-serve start\|stop\|status [4\|8]` | Manage the model server |
 | `qwen-stop` | Unload and free the memory, verified |
 | `qwen-think on\|off\|low\|medium\|xhigh` | Reasoning toggle |
@@ -107,14 +107,15 @@ That is the whole setup. From here it works with the network off.
 
 Apple M5 Max, 128 GB, macOS 26.6.1. Benchmarked with
 [llama-benchy](https://github.com/eugr/llama-benchy), 3 runs per cell, idle
-GPU, reasoning off, MTP on.
+GPU, reasoning off, MTP on, on the exact versions pinned in
+[VERSIONS.md](VERSIONS.md).
 
 | | 4-bit | 8-bit |
 |---|---|---|
-| **Token generation** | **47.5 t/s** | **30.2 t/s** |
-| Prompt processing | 765 t/s | 609 t/s |
-| Token generation @ 8K context | 35.1 t/s | 24.1 t/s |
-| Time to first token | 2.7 s | 3.4 s |
+| **Token generation** | **47.0 t/s** | **28.7 t/s** |
+| Prompt processing | 854 t/s | 883 t/s |
+| Token generation @ 8K context | 36.1 t/s | 26.4 t/s |
+| Time to first token | 2.4 s | 2.3 s |
 | Memory resident | 15.5 GB | 28.1 GB |
 
 **MTP speculative decoding is worth 2.2x** and costs nothing in quality, since
@@ -203,7 +204,7 @@ This repo is glue around other people's work.
   token generation, runs a coherence check, and reports mean ± stdev across
   runs, which is the difference between a measurement and a vibe. It also made
   the depth-8192 collapse visible; a single-number benchmark would have let this
-  repo publish a 48 t/s headline and never mention that it falls to 35 t/s with
+  repo publish a 47 t/s headline and never mention that it falls to 36 t/s with
   a filled context. `qwen-bench` is a thin wrapper around it.
 - **[ml-explore/mlx](https://github.com/ml-explore/mlx)** — the runtime.
 - **[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)** by

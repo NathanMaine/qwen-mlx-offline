@@ -3,7 +3,7 @@
 # Usage: qwen-serve [start|stop|status|log] [4|8]
 #
 # Uses mlx_vlm.server (not mlx_lm.server) so the model's own MTP head can drive
-# speculative decoding: measured 15.5 -> ~31-37 tok/s, a 2.2x speedup, lossless
+# speculative decoding: measured 15.5 -> ~29-47 tok/s depending on quant,
 # because the 27B verifies every token the drafter proposes.
 #
 # Set QWEN_NO_MTP=1 to fall back to plain decoding.
@@ -136,7 +136,7 @@ case "${1:-start}" in
       cur=$(loaded_model)
       echo "qwen: serving on :$PORT (model $cur)"
       [ -d "$DRAFT" ] && [ -z "${QWEN_NO_MTP:-}" ] && echo "qwen: MTP speculative decoding enabled"
-      case "$cur" in *4bit) echo "qwen: 4-bit  (~54 tok/s, 15.5 GB)";; *8bit) echo "qwen: 8-bit  (~34 tok/s, 28 GB)";; esac
+      case "$cur" in *4bit) echo "qwen: 4-bit  (~47 tok/s, 15.5 GB)";; *8bit) echo "qwen: 8-bit  (~29 tok/s, 28 GB)";; esac
       rss=$(ps -o rss= -p "$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1)" 2>/dev/null || true)
       [ -n "$rss" ] && awk -v r="$rss" 'BEGIN{printf "qwen: %.1f GB resident\n", r/1024/1024}'
     else echo "qwen: not running"; exit 1; fi

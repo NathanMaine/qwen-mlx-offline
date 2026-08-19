@@ -25,7 +25,7 @@ from external sources are labelled as such. Nothing here is estimated.
 | mlx | **0.32.0** |
 | mlx-metal | 0.32.0 |
 | mlx-lm | **0.31.3** |
-| mlx-vlm | **0.6.13** → 0.6.14 |
+| mlx-vlm | **0.6.14** (pinned; see VERSIONS.md) |
 | transformers | 5.15.0 |
 | llama.cpp | build 10472 (commit 7a556b8f9) |
 | llama-benchy | 0.4.0 |
@@ -165,18 +165,42 @@ uvx llama-benchy \
 
 ### 4.3 Results, reasoning OFF, clean GPU
 
+Measured on **mlx-vlm 0.6.14**, the version pinned in `VERSIONS.md`.
+
 | Metric | 4-bit | 8-bit |
 |---|---|---|
-| Prompt processing @ depth 0 | **765.45 ± 19.11 t/s** | 608.55 ± 11.13 t/s |
-| **Token generation @ depth 0** | **47.53 ± 4.81 t/s** | **30.17 ± 0.69 t/s** |
-| Peak tg @ depth 0 | 48.00 ± 4.97 | 30.67 ± 0.94 |
-| TTFR / e2e TTFT @ depth 0 | 2681.11 ± 67.42 ms | 3370.79 ± 62.07 ms |
-| Prompt processing @ depth 8192 | 713.78 ± 13.64 t/s | 686.30 ± 8.41 t/s |
-| **Token generation @ depth 8192** | **35.06 ± 2.18 t/s** | **24.12 ± 1.60 t/s** |
-| Peak tg @ depth 8192 | 35.67 ± 2.05 | 24.67 ± 1.89 |
-| TTFR / e2e TTFT @ depth 8192 | 14355.43 ± 277.12 ms | 14926.77 ± 180.68 ms |
+| Prompt processing @ depth 0 | **853.75 ± 58.59 t/s** | 882.74 ± 16.24 t/s |
+| **Token generation @ depth 0** | **47.00 ± 1.03 t/s** | **28.72 ± 1.32 t/s** |
+| Peak tg @ depth 0 | 47.67 ± 1.25 | 29.00 ± 1.41 |
+| TTFR / e2e TTFT @ depth 0 | 2413.20 ± 158.80 ms | 2324.73 ± 42.63 ms |
+| Prompt processing @ depth 8192 | 809.78 ± 5.06 t/s | 741.25 ± 1.96 t/s |
+| **Token generation @ depth 8192** | **36.05 ± 2.20 t/s** | **26.44 ± 0.42 t/s** |
+| Peak tg @ depth 8192 | 37.00 ± 2.16 | 27.33 ± 0.47 |
+| TTFR / e2e TTFT @ depth 8192 | 12649.85 ± 78.67 ms | 13818.68 ± 36.63 ms |
 
-**4-bit generates 1.57x faster than 8-bit** (47.53 / 30.17).
+**4-bit generates 1.64x faster than 8-bit** (47.00 / 28.72).
+
+### 4.3.1 The MLX version materially changes the numbers
+
+The same suite on **mlx-vlm 0.6.13**, everything else identical:
+
+| Metric | 0.6.13 | 0.6.14 | Change |
+|---|---|---|---|
+| 4-bit pp2048 @ d0 | 765.45 | 853.75 | +11.5% |
+| 4-bit tg128 @ d0 | 47.53 | 47.00 | -1.1% |
+| 4-bit pp2048 @ d8192 | 713.78 | 809.78 | +13.4% |
+| 4-bit tg128 @ d8192 | 35.06 | 36.05 | +2.8% |
+| **8-bit pp2048 @ d0** | 608.55 | **882.74** | **+45.1%** |
+| 8-bit tg128 @ d0 | 30.17 | 28.72 | -4.8% |
+| 8-bit pp2048 @ d8192 | 686.30 | 741.25 | +8.0% |
+| 8-bit tg128 @ d8192 | 24.12 | 26.44 | +9.6% |
+
+One patch release moved 8-bit prompt processing by **45%**. Token generation
+moved much less, and the 4-bit tg difference is inside the run-to-run spread.
+
+This is why `VERSIONS.md` pins exact versions: an unpinned
+`pip install -U mlx-vlm` can shift a benchmark more than the change you were
+trying to measure.
 
 ### 4.4 Context depth costs ~a quarter of decode speed
 
