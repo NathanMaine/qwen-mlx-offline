@@ -59,6 +59,9 @@ them wrong and you get 15 t/s and wonder why local models feel sluggish.
 
 Plus double-clickable `.command` launchers for the Finder-inclined.
 
+[docs/SHORTCUTS.md](docs/SHORTCUTS.md) walks through each one, what it does,
+and why it behaves the way it does.
+
 ---
 
 ## Install
@@ -170,7 +173,7 @@ your code is leaving the laptop.
 ```
 bin/          the commands
 launchers/    double-clickable .command files for macOS
-docs/         benchmarks, stability notes, configuration reference
+docs/         shortcuts guide, benchmarks, stability notes, configuration
 VERSIONS.md   pinned model revisions + runtime versions behind every number
 install.sh    venv + PATH setup
 ```
