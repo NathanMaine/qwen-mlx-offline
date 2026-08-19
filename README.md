@@ -1,5 +1,7 @@
 # Qwen 3.8 on a MacBook, Offline, All Day
 
+![A laptop running a local model in a beach chair, no network in sight](assets/hero.jpg)
+
 A complete setup for running **Qwen3.8-27B** locally on Apple Silicon with MLX,
 fast enough to actually work with. No internet, no API key, no per-token bill.
 Close the lid on a plane and it keeps going.
