@@ -79,3 +79,12 @@ numbers** — decode is bound by memory bandwidth, and the M5 Max's 614 GB/s
 (vendor figure, not independently verified here) is the denominator behind every
 t/s in this repo. Treat the tables as "what this machine did", not "what your
 machine will do."
+
+### Not yet measured
+
+Only the M5 Max above has been benchmarked. Runs on other Apple Silicon tiers
+are planned and will be added here when they exist; until a table appears with
+a machine's name on it, this repo makes **no claim** about what that machine
+does. If you run it somewhere else, the numbers are worth having — decode
+should scale roughly with memory bandwidth, and it would be useful to know
+where that stops holding.
