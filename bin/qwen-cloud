@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Launch Qwen Code against QwenCloud. Prompts and file contents LEAVE this
+# laptop and consume Token Plan quota. Extra args pass through to qwen.
+#   qwen-cloud                    # default model below
+#   QWEN_CLOUD_MODEL=glm-5.2 qwen-cloud
+set -euo pipefail
+
+MODEL="${QWEN_CLOUD_MODEL:-qwen3.8-max}"
+
+printf '\033[33m● CLOUD\033[0m  %s  (aliyuncs.com, fast, uses Token Plan quota)\n\n' "$MODEL"
+exec qwen -m "$MODEL" "$@"

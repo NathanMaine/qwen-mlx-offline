@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Turn reasoning on/off for the LOCAL Qwen providers in Qwen Code.
+#   qwen-think off     fast, no reasoning
+#   qwen-think on      reasoning at low effort (default)
+#   qwen-think low|medium|xhigh
+#   qwen-think status
+#
+# Qwen Code reads settings.json at startup and has no per-invocation flag, so
+# the setting has to be written before launching. Restart Qwen Code after.
+set -euo pipefail
+CFG="$HOME/.qwen/settings.json"
+
+case "${1:-status}" in
+  status)
+    python3 - "$CFG" <<'PY'
+import json,sys
+s=json.load(open(sys.argv[1]))
+for p in s["modelProviders"]["openai"]:
+    if "127.0.0.1" in p.get("baseUrl",""):
+        kw=p.get("generationConfig",{}).get("extra_body",{}).get("chat_template_kwargs",{})
+        on=kw.get("enable_thinking")
+        print(f'  {p["name"]}\n     reasoning: {"ON  (effort=%s)"%kw.get("reasoning_effort","?") if on else "OFF"}')
+PY
+    ;;
+  on|off|low|medium|xhigh)
+    python3 - "$CFG" "$1" <<'PY'
+import json,sys
+cfg,mode=sys.argv[1],sys.argv[2]
+s=json.load(open(cfg)); n=0
+for p in s["modelProviders"]["openai"]:
+    if "127.0.0.1" not in p.get("baseUrl",""): continue
+    kw=p.setdefault("generationConfig",{}).setdefault("extra_body",{}).setdefault("chat_template_kwargs",{})
+    if mode=="off":
+        kw["enable_thinking"]=False; kw.pop("reasoning_effort",None)
+    else:
+        kw["enable_thinking"]=True
+        kw["reasoning_effort"]="low" if mode=="on" else mode
+    n+=1
+json.dump(s,open(cfg,"w"),indent=2); open(cfg,"a").write("\n")
+print(f'  reasoning {"OFF" if mode=="off" else "ON (effort=%s)"%kw["reasoning_effort"]} on {n} local provider(s)')
+print("  restart Qwen Code to pick it up")
+PY
+    ;;
+  *) echo "usage: qwen-think [on|off|low|medium|xhigh|status]" >&2; exit 2 ;;
+esac

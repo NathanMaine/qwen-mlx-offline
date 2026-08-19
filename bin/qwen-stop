@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Stop the Qwen server and free the model from memory.
+#
+# Verifies the PROCESS is gone, not just that the port closed, # mlx_vlm.server releases its listener while still holding ~28 GB, so a
+# port-only check reports "unloaded" while the memory is still in use.
+set -euo pipefail
+
+PORT="${QWEN_PORT:-8080}"
+
+# Every process holding the model, whether or not it still has the socket.
+model_pids() {
+  { lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
+    pgrep -f "mlx_vlm.server" 2>/dev/null || true
+  } | sort -u
+}
+
+pids=$(model_pids)
+if [ -z "$pids" ]; then
+  echo "qwen: not running, nothing to unload"
+  exit 0
+fi
+
+freed=0
+for p in $pids; do
+  rss=$(ps -o rss= -p "$p" 2>/dev/null || echo 0)
+  freed=$((freed + rss))
+done
+
+qwen-serve stop >/dev/null 2>&1 || true
+
+# Sweep anything qwen-serve did not own (hand-started servers).
+for p in $(model_pids); do
+  kill "$p" 2>/dev/null || true
+done
+for _ in $(seq 1 20); do [ -z "$(model_pids)" ] && break; sleep 1; done
+for p in $(model_pids); do
+  kill -9 "$p" 2>/dev/null || true
+done
+for _ in $(seq 1 10); do [ -z "$(model_pids)" ] && break; sleep 1; done
+
+left=$(model_pids)
+if [ -n "$left" ]; then
+  echo "qwen: WARNING - these still hold the model:" >&2
+  for p in $left; do ps -o pid=,rss=,command= -p "$p" 2>/dev/null | cut -c1-90 >&2; done
+  exit 1
+fi
+
+awk -v r="$freed" 'BEGIN{printf "qwen: unloaded, %.1f GB freed\n", r/1024/1024}'

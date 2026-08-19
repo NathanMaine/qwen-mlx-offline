@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Qwen Code against another machine on your LAN (e.g. a DGX Spark).
+# Set QWEN_SPARK_HOST to its address; there is no useful default.
+#   unsloth/Qwen3.8-27B-NVFP4, Unsloth Dynamic V3.0, mixed 4/8-bit, 256K ctx.
+#   Runs on the Spark's GPU, so it cannot hit the Metal driver panic that
+#   affects local MLX, and it leaves this laptop's memory free.
+# Prompts leave this machine but stay on your LAN.
+set -euo pipefail
+
+HOST="${QWEN_SPARK_HOST:?set QWEN_SPARK_HOST to your LAN box, e.g. 10.0.0.5}"
+PORT="${QWEN_SPARK_PORT:-8000}"
+MODEL="${QWEN_SPARK_MODEL:-qwen38-27b-unsloth-nvfp4}"
+
+if ! curl -sf -m 5 "http://$HOST:$PORT/v1/models" >/dev/null 2>&1; then
+  echo "qwen: Spark not reachable at $HOST:$PORT, is the box on?" >&2
+  exit 1
+fi
+
+printf '\033[36m● SPARK\033[0m  %s  (%s:%s, LAN, 256K ctx)\n\n' "$MODEL" "$HOST" "$PORT"
+exec qwen -m "$MODEL" "$@"

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Qwen Code against the LOCAL 8-bit model. Nothing leaves this laptop.
+#   ~34 tok/s, 28 GB resident. Near-lossless vs bf16, the quality choice.
+# Extra args pass through, e.g. qwen-local-8 -p "review this".
+set -euo pipefail
+
+MODEL="$HOME/models/Qwen3.8-27B-8bit"
+[ -d "$MODEL" ] || { echo "qwen: 8-bit model not found at $MODEL" >&2; exit 1; }
+
+# Swaps the server to 8-bit if it is currently holding a different quant.
+qwen-serve start 8
+
+printf '\033[32m● LOCAL 8-bit\033[0m  ~34 tok/s, 28 GB  (127.0.0.1:8080, offline)\n\n'
+exec qwen -m "$MODEL" "$@"

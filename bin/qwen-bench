@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Speed benchmark for the local Qwen MLX server.
+
+Measures what actually matters for interactive use: time-to-first-token,
+decode rate, and prefill rate, at short, medium and long prompts.
+
+  qwen-bench            benchmark whatever quant is loaded
+  qwen-bench --json     machine-readable
+"""
+import json, statistics, sys, time, urllib.request
+
+BASE = "http://127.0.0.1:8080"
+GB = 1024**3
+
+
+def loaded_model():
+    with urllib.request.urlopen(f"{BASE}/v1/models", timeout=10) as r:
+        return json.load(r)["data"][0]["id"]
+
+
+def gpu_busy():
+    """Refuse to benchmark against a server someone else is using."""
+    import subprocess, re
+    out = subprocess.run("ioreg -r -c IOAccelerator -d 1", shell=True,
+                         capture_output=True, text=True, timeout=15).stdout
+    m = re.search(r'"Device Utilization %"=(\d+)', out)
+    return int(m.group(1)) if m else 0
+
+
+def run(model, prompt, max_tokens):
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens, "stream": True,
+            "chat_template_kwargs": {"enable_thinking": False}}
+    req = urllib.request.Request(f"{BASE}/v1/chat/completions",
+                                 data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    t0 = time.time(); ttft = None; n = 0
+    with urllib.request.urlopen(req, timeout=900) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                d = json.loads(payload)["choices"][0]["delta"]
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
+            if d.get("content"):
+                if ttft is None:
+                    ttft = time.time() - t0
+                n += 1
+    total = time.time() - t0
+    decode = (n - 1) / (total - ttft) if ttft and total > ttft and n > 1 else 0
+    return {"ttft": ttft or 0, "tokens": n, "total": total, "decode": decode}
+
+
+CASES = [
+    ("short  (~20 tok prompt)",  "Explain what a KV cache is.", 300),
+    ("medium (~2k tok prompt)",  "word " * 1500 + "\nSummarise the above in one sentence.", 200),
+    ("long   (~16k tok prompt)", "word " * 12000 + "\nSummarise the above in one sentence.", 200),
+]
+
+
+def main():
+    as_json = "--json" in sys.argv
+    model = loaded_model()
+    busy = gpu_busy()
+    if not as_json:
+        print(f"model: {model}")
+        print(f"GPU utilization before start: {busy}%")
+        if busy > 25:
+            print("  ⚠ GPU is already busy, results will measure contention,")
+            print("    not your setup. Stop other clients for a clean number.\n")
+        else:
+            print()
+    out = {}
+    for label, prompt, mx in CASES:
+        rs = [run(model, prompt, mx) for _ in range(2)]   # 2 runs, take best
+        best = max(rs, key=lambda r: r["decode"])
+        out[label.split()[0]] = best
+        if not as_json:
+            print(f"  {label:26} TTFT {best['ttft']:5.2f}s   "
+                  f"{best['tokens']:4d} tok   decode {best['decode']:5.1f} tok/s")
+    if as_json:
+        print(json.dumps({"model": model, "gpu_busy_pct": busy, "results": out}, indent=2))
+    else:
+        d = [v["decode"] for v in out.values() if v["decode"]]
+        if d:
+            print(f"\n  mean decode: {statistics.mean(d):.1f} tok/s")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

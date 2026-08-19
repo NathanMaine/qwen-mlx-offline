@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Persistent Qwen MLX server: loads the model once and keeps it resident.
+# Usage: qwen-serve [start|stop|status|log] [4|8]
+#
+# Uses mlx_vlm.server (not mlx_lm.server) so the model's own MTP head can drive
+# speculative decoding: measured 15.5 -> ~31-37 tok/s, a 2.2x speedup, lossless
+# because the 27B verifies every token the drafter proposes.
+#
+# Set QWEN_NO_MTP=1 to fall back to plain decoding.
+set -euo pipefail
+
+# Quant selection: `qwen-serve start 4` or `start 8`, or QWEN_QUANT=4.
+# Default 8-bit, near-lossless; 4-bit is ~1.6x faster but degrades on hard
+# reasoning and code. The same MTP drafter serves both targets.
+QUANT="${QWEN_QUANT:-8}"
+case "${2:-}" in 4|8) QUANT="$2" ;; esac
+
+MODEL="${QWEN_MODEL:-$HOME/models/Qwen3.8-27B-${QUANT}bit}"
+DRAFT="${QWEN_DRAFT_MODEL:-$HOME/models/Qwen3.8-27B-MTP-4bit}"
+PORT="${QWEN_PORT:-8080}"
+VENV="$HOME/.venvs/mlx/bin"
+STATE="$HOME/.local/state/qwen"
+LOG="$STATE/server.log"
+PIDFILE="$STATE/server.pid"
+mkdir -p "$STATE"
+
+is_up() { curl -sf -m 2 "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; }
+
+# Which model the running server actually holds (its /v1/models id is the path).
+loaded_model() {
+  curl -sf -m 2 "http://127.0.0.1:$PORT/v1/models" 2>/dev/null \
+    | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+# Free the port even when we did not write the pidfile (e.g. a hand-started
+# server). Killing by pidfile alone silently leaves the old quant serving.
+#
+# Waits for the PROCESS to exit, not just the socket to close: mlx_vlm.server
+# drops its listener while still holding the model, so a port-only check
+# reports "unloaded" with tens of GB still resident. Escalates to KILL.
+force_stop() {
+  local pids p
+  pids=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
+  [ -z "$pids" ] && { rm -f "$PIDFILE"; return 0; }
+
+  kill $pids 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    still=""
+    for p in $pids; do kill -0 "$p" 2>/dev/null && still="$still $p"; done
+    [ -z "$still" ] && break
+    sleep 1
+  done
+
+  # Anything that ignored SIGTERM gets SIGKILL rather than being left resident.
+  for p in $pids; do
+    if kill -0 "$p" 2>/dev/null; then
+      kill -9 "$p" 2>/dev/null || true
+      for _ in $(seq 1 10); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+    fi
+  done
+  rm -f "$PIDFILE"
+}
+
+case "${1:-start}" in
+  start)
+    if is_up; then
+      cur=$(loaded_model)
+      if [ "$cur" = "$MODEL" ]; then
+        echo "qwen: already serving ${QUANT}-bit on :$PORT"; exit 0
+      fi
+      # Wrong quant loaded, swap it rather than pretending we honoured the ask.
+      echo "qwen: swapping $(basename "$cur") -> $(basename "$MODEL")"
+      force_stop
+    fi
+    [ -d "$MODEL" ] || { echo "qwen: model not found at $MODEL" >&2; exit 1; }
+
+    # Speculative decoding only when the drafter is actually present.
+    spec=()
+    if [ -z "${QWEN_NO_MTP:-}" ] && [ -d "$DRAFT" ]; then
+      spec=(--draft-model "$DRAFT" --draft-kind mtp)
+    fi
+
+    # --host 127.0.0.1 is deliberate: mlx_vlm.server defaults to 0.0.0.0, which
+    # would expose the model to everything on the network.
+    #
+    # No sampling flags: mlx_vlm.server reads temperature/top_p/top_k from the
+    # model's own config.json (1.0 / 0.95 / 20 here). mlx_lm.server did NOT --
+    # it defaulted to greedy, which degrades a reasoning model.
+    # Bound the KV cache. Unbounded growth is what walks GPU allocation up
+    # until Apple's driver panics with "completeMemory() prepare count
+    # underflow" @IOGPUMemory.cpp:550, a known driver bug (ml-explore/mlx#3346,
+    # #3186; mlx-lm#883) that MLX's allocation pattern triggers reliably.
+    # Observed here: 17 GB at load -> 104 GB over one long agent session.
+    # KV_SIZE caps tokens retained; KV_BITS quantises the cache (8-bit ~halves
+    # it at negligible quality cost). Raise QWEN_KV_SIZE if you need longer
+    # context and can watch `vram`.
+    # MAX_KV_SIZE must cover prompt + max_generation, not just the prompt:
+    # the server rejects with 400 when prompt + max_tokens exceeds it. Qwen Code
+    # asks for 64000 max generation, so 65536 left almost no room for prompt and
+    # 400'd on a 37k-token prompt. 131072 fits a 64k generation plus a 64k
+    # prompt. Raised again to the model's own 262144 ceiling after a 73k
+    # prompt + 64k reserved generation still 400'd at 131072. The real memory
+    # saver here is --kv-bits 8 (halves the cache), not the token cap: the cap
+    # cannot go below what a client reserves without rejecting valid work.
+    KV_SIZE="${QWEN_KV_SIZE:-262144}"
+    KV_BITS="${QWEN_KV_BITS:-8}"
+    guard=(--max-kv-size "$KV_SIZE" --kv-bits "$KV_BITS")
+    [ -n "${QWEN_NO_KV_GUARD:-}" ] && guard=()
+
+    nohup "$VENV/mlx_vlm.server" \
+      --model "$MODEL" \
+      "${spec[@]}" \
+      "${guard[@]}" \
+      --host 127.0.0.1 \
+      --port "$PORT" \
+      --max-tokens 4096 \
+      --log-level WARNING \
+      >>"$LOG" 2>&1 &
+    echo $! >"$PIDFILE"
+
+    printf 'qwen: loading %s%s ' "$(basename "$MODEL")" \
+      "$([ ${#spec[@]} -gt 0 ] && echo ' +MTP' || echo '')"
+    for _ in $(seq 1 180); do
+      if is_up; then echo " ready on :$PORT"; exit 0; fi
+      kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo; echo "qwen: server died, see $LOG" >&2; tail -20 "$LOG" >&2; exit 1; }
+      printf '.'; sleep 1
+    done
+    echo; echo "qwen: timed out waiting for server, see $LOG" >&2; exit 1
+    ;;
+  stop)
+    if is_up; then force_stop; echo "qwen: stopped"; else echo "qwen: not running"; rm -f "$PIDFILE"; fi
+    ;;
+  status)
+    if is_up; then
+      # Report what is ACTUALLY loaded, not the default $MODEL would resolve to.
+      cur=$(loaded_model)
+      echo "qwen: serving on :$PORT (model $cur)"
+      [ -d "$DRAFT" ] && [ -z "${QWEN_NO_MTP:-}" ] && echo "qwen: MTP speculative decoding enabled"
+      case "$cur" in *4bit) echo "qwen: 4-bit  (~54 tok/s, 15.5 GB)";; *8bit) echo "qwen: 8-bit  (~34 tok/s, 28 GB)";; esac
+      rss=$(ps -o rss= -p "$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1)" 2>/dev/null || true)
+      [ -n "$rss" ] && awk -v r="$rss" 'BEGIN{printf "qwen: %.1f GB resident\n", r/1024/1024}'
+    else echo "qwen: not running"; exit 1; fi
+    ;;
+  log) tail -f "$LOG" ;;
+  *) echo "usage: qwen-serve [start|stop|status|log] [4|8]" >&2; exit 2 ;;
+esac

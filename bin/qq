@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Thin CLI client for the local Qwen MLX server.
+
+  qq "explain gated deltanet"        one-shot, streamed
+  qq -i                              interactive multi-turn
+  git diff | qq "review this"        stdin is appended to the prompt
+  qq --think "hard problem"          thinking mode (reasoning -> stderr)
+
+Starts qwen-serve automatically if the server isn't up.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+PORT = os.environ.get("QWEN_PORT", "8080")
+MODEL = os.environ.get("QWEN_MODEL", os.path.expanduser("~/models/Qwen3.8-27B-8bit"))
+BASE = f"http://127.0.0.1:{PORT}"
+
+
+def server_up() -> bool:
+    try:
+        urllib.request.urlopen(f"{BASE}/v1/models", timeout=2)
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def ensure_server() -> None:
+    if server_up():
+        return
+    print("qwen: server not running, starting it...", file=sys.stderr)
+    if subprocess.call(["qwen-serve", "start"], stdout=sys.stderr) != 0:
+        sys.exit(1)
+
+
+def stream(messages, think: bool, max_tokens: int, effort: str = "low") -> str:
+    """POST a chat completion and stream deltas to stdout. Returns answer text.
+
+    Reasoning tokens go to stderr so piping stdout stays clean.
+    """
+    kwargs = {"enable_thinking": think}
+    if think:
+        kwargs["reasoning_effort"] = effort
+    payload = {
+        "model": MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "chat_template_kwargs": kwargs,
+    }
+    req = urllib.request.Request(
+        f"{BASE}/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    out = []
+    in_reasoning = False
+    with urllib.request.urlopen(req) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            body = line[5:].strip()
+            if body == "[DONE]":
+                break
+            try:
+                delta = json.loads(body)["choices"][0]["delta"]
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
+            if reasoning := (delta.get("reasoning") or ""):
+                if not in_reasoning:
+                    sys.stderr.write("\x1b[2m[thinking] ")
+                    in_reasoning = True
+                sys.stderr.write(reasoning)
+                sys.stderr.flush()
+            if content := (delta.get("content") or ""):
+                if in_reasoning:
+                    sys.stderr.write("\x1b[0m\n\n")
+                    sys.stderr.flush()
+                    in_reasoning = False
+                out.append(content)
+                sys.stdout.write(content)
+                sys.stdout.flush()
+    if in_reasoning:
+        sys.stderr.write("\x1b[0m\n")
+    sys.stdout.write("\n")
+    return "".join(out)
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(prog="qq", add_help=True)
+    p.add_argument("prompt", nargs="*", help="the prompt; omit to read stdin only")
+    p.add_argument("-i", "--interactive", action="store_true", help="multi-turn chat")
+    p.add_argument("--think", action="store_true", help="enable thinking mode")
+    p.add_argument("--effort", choices=("low", "medium", "xhigh"), default="low",
+                   help="reasoning effort with --think (default: low; xhigh can "
+                        "burn many thousands of tokens before answering)")
+    p.add_argument("-m", "--max-tokens", type=int, default=None)
+    p.add_argument("-s", "--system", help="system prompt")
+    args = p.parse_args()
+
+    # Thinking needs far more headroom: at xhigh the model can reason past
+    # 3000 tokens without emitting any answer at all.
+    if args.max_tokens is None:
+        args.max_tokens = 32768 if args.think else 4096
+
+    # Bare `qq` on a terminal means "start a chat", not "show me an error".
+    if not args.prompt and sys.stdin.isatty():
+        args.interactive = True
+
+    ensure_server()
+    messages = [{"role": "system", "content": args.system}] if args.system else []
+
+    if args.interactive:
+        print("qwen: interactive (ctrl-d or 'exit' to quit)", file=sys.stderr)
+        while True:
+            try:
+                user = input("\n> ").strip()
+            except EOFError:
+                print()
+                break
+            if user in ("exit", "quit"):
+                break
+            if not user:
+                continue
+            messages.append({"role": "user", "content": user})
+            messages.append({"role": "assistant", "content": stream(messages, args.think, args.max_tokens, args.effort)})
+        return
+
+    parts = [" ".join(args.prompt)] if args.prompt else []
+    if not sys.stdin.isatty():
+        parts.append(sys.stdin.read())
+    prompt = "\n\n".join(x for x in parts if x.strip())
+    if not prompt:
+        p.error("no prompt given (pass text, pipe stdin, or use -i)")
+
+    messages.append({"role": "user", "content": prompt})
+    stream(messages, args.think, args.max_tokens, args.effort)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

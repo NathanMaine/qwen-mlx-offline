@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""What is using GPU memory right now.
+
+Apple Silicon has no separate VRAM -- GPU and CPU share one pool -- so this
+reports the GPU's slice of unified memory (from the IOAccelerator driver)
+alongside the processes that actually hold model weights.
+
+  vram         one snapshot
+  vram -w      refresh every 2s until ctrl-c
+"""
+import re
+import subprocess
+import sys
+import time
+
+GB = 1024 ** 3
+# Processes that hold model weights. Matched against the full command line.
+SERVERS = [
+    ("mlx_vlm.server", "MLX (mlx-vlm)"),
+    ("mlx_lm.server", "MLX (mlx-lm)"),
+    ("llama-server", "llama.cpp"),
+    ("ollama", "Ollama"),
+    ("unsloth_studio", "Unsloth Studio"),
+    ("vllm", "vLLM"),
+    ("lms ", "LM Studio"),
+]
+
+
+def sh(cmd):
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                              timeout=15).stdout
+    except subprocess.SubprocessError:
+        return ""
+
+
+def gpu_stats():
+    """GPU allocation straight from the IOAccelerator driver."""
+    out = sh("ioreg -r -c IOAccelerator -d 1")
+    m = re.search(r'"PerformanceStatistics"\s*=\s*\{(.*?)\}', out, re.S)
+    if not m:
+        return {}
+    stats = {}
+    for k, v in re.findall(r'"([^"]+)"=(\d+)', m.group(1)):
+        stats[k] = int(v)
+    return stats
+
+
+def unified_memory():
+    total = int(sh("sysctl -n hw.memsize") or 0)
+    free_pct = 0
+    mp = sh("memory_pressure")
+    m = re.search(r"free percentage:\s*(\d+)", mp)
+    if m:
+        free_pct = int(m.group(1))
+    return total, free_pct
+
+
+def model_processes():
+    """Model-serving processes, with the model each one holds."""
+    out = sh("ps -eo pid=,rss=,etime=,command=")
+    rows = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, rss, etime, cmd = parts
+        if "vram" in cmd or "ioreg" in cmd:
+            continue
+        label = next((lab for pat, lab in SERVERS if pat in cmd), None)
+        if not label:
+            continue
+        # The model path/name usually follows -m / --model.
+        m = re.search(r"(?:--model|-m)\s+(\S+)", cmd)
+        model = m.group(1).rstrip("/").split("/")[-1] if m else "-"
+        rows.append((int(pid), int(rss) * 1024, etime, label, model))
+    return sorted(rows, key=lambda r: -r[1])
+
+
+def ports_for(pid):
+    out = sh(f"lsof -nP -a -p {pid} -iTCP -sTCP:LISTEN 2>/dev/null")
+    return ",".join(sorted({p for p in re.findall(r":(\d+) \(LISTEN\)", out)})) or "-"
+
+
+def render():
+    g = gpu_stats()
+    total, free_pct = unified_memory()
+    alloc = g.get("Alloc system memory", 0)
+    inuse = g.get("In use system memory", 0)
+
+    print("\033[1mGPU (unified memory, no separate VRAM on Apple Silicon)\033[0m")
+    print(f"  allocated to GPU : {alloc/GB:6.2f} GB")
+    print(f"  in use by GPU    : {inuse/GB:6.2f} GB")
+    util = g.get("Device Utilization %")
+    if util is not None:
+        print(f"  device util      : {util:3d} %   "
+              f"(renderer {g.get('Renderer Utilization %', 0)}%, "
+              f"tiler {g.get('Tiler Utilization %', 0)}%)")
+    print(f"  system memory    : {total/GB:.0f} GB total, {free_pct}% free")
+
+    rows = model_processes()
+    print("\n\033[1mProcesses holding model weights\033[0m")
+    if not rows:
+        print("  none, no model is loaded")
+        return
+    print(f"  {'PID':>7}  {'RESIDENT':>9}  {'PORT':>6}  {'UPTIME':>11}  RUNTIME / MODEL")
+    held = 0
+    for pid, rss, etime, label, model in rows:
+        held += rss
+        print(f"  {pid:>7}  {rss/GB:6.2f} GB  {ports_for(pid):>6}  {etime:>11}  {label} / {model}")
+    print(f"  {'':>7}  {held/GB:6.2f} GB  total held by model servers")
+
+
+def main():
+    watch = "-w" in sys.argv or "--watch" in sys.argv
+    if not watch:
+        render()
+        return
+    try:
+        while True:
+            print("\033[2J\033[H", end="")
+            print(time.strftime("%H:%M:%S"))
+            render()
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print()
+
+
+if __name__ == "__main__":
+    main()
