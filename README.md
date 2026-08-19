@@ -54,6 +54,8 @@ them wrong and you get 15 t/s and wonder why local models feel sluggish.
 | `qwen-think on\|off\|low\|medium\|xhigh` | Reasoning toggle |
 | `vram` / `vram -w` | What is using GPU memory, live |
 | `qwen-bench` | Speed check |
+| `qwen-preflight [4\|8]` | Check the machine before you serve |
+| `qwen-offline-check [4\|8]` | Prove it runs with the network off |
 
 Plus double-clickable `.command` launchers for the Finder-inclined.
 
@@ -166,11 +168,54 @@ your code is leaving the laptop.
 ## Layout
 
 ```
-bin/         the commands
-launchers/   double-clickable .command files for macOS
-docs/        benchmarks, stability notes, configuration reference
-install.sh   venv + PATH setup
+bin/          the commands
+launchers/    double-clickable .command files for macOS
+docs/         benchmarks, stability notes, configuration reference
+VERSIONS.md   pinned model revisions + runtime versions behind every number
+install.sh    venv + PATH setup
 ```
+
+---
+
+## Reproducing the numbers
+
+Model repos are not versions: `mlx-community` re-quantizes in place, so the same
+repo id can hand you different weights months apart. [VERSIONS.md](VERSIONS.md)
+pins the exact model revisions and runtime versions behind every figure here,
+with `hf download --revision` commands to match.
+
+`qwen-preflight` catches the two silent throughput killers before you serve:
+running under Rosetta, and a macOS older than 26.6.1 (see
+[docs/STABILITY.md](docs/STABILITY.md)).
+
+---
+
+## Credits
+
+This repo is glue around other people's work.
+
+- **[llama-benchy](https://github.com/eugr/llama-benchy)** by
+  [eugr](https://github.com/eugr) — the benchmark harness behind every number in
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md). It separates prompt processing from
+  token generation, runs a coherence check, and reports mean ± stdev across
+  runs, which is the difference between a measurement and a vibe. It also made
+  the depth-8192 collapse visible; a single-number benchmark would have let this
+  repo publish a 48 t/s headline and never mention that it falls to 35 t/s with
+  a filled context. `qwen-bench` is a thin wrapper around it.
+- **[ml-explore/mlx](https://github.com/ml-explore/mlx)** — the runtime.
+- **[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)** by
+  [Blaizzy](https://github.com/Blaizzy) — the only one of the two servers that
+  can drive an MTP drafter, which is where the 2-3.5x comes from.
+- **[mlx-community](https://huggingface.co/mlx-community)** — the 4-bit, 8-bit
+  and MTP-4bit conversions.
+- **[Qwen](https://huggingface.co/Qwen/Qwen3.8-27B)** — the base model,
+  Apache-2.0.
+- **[Unsloth](https://huggingface.co/unsloth)** — the Dynamic V3.0 GGUF used for
+  the llama.cpp cross-check.
+
+The kernel-panic issues cited in [docs/STABILITY.md](docs/STABILITY.md) belong
+to the people who filed them. They turned "my laptop panicked" into "this is a
+known driver bug with a known mitigation."
 
 ---
 

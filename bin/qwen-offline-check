@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Prove the offline claim instead of asserting it.
+#
+# This repo's headline is that nothing needs a network once the weights are on
+# disk. That is easy to get subtly wrong: one library reaching for the hub to
+# resolve a tokenizer or a config on first use and the claim quietly stops being
+# true — on the plane, not at the desk, because at the desk it always works.
+#
+# So: force every HF library offline, confirm the weights resolve locally, and
+# run a real generation. Passing this with Wi-Fi off means it passes anywhere.
+#
+# Usage:  qwen-offline-check [4|8]
+set -uo pipefail
+
+QUANT="${1:-${QWEN_QUANT:-8}}"
+VENV="${QWEN_VENV:-$HOME/.venvs/mlx}"
+MODEL_ROOT="${QWEN_MODEL_ROOT:-$HOME/models}"
+PORT="${QWEN_PORT:-8080}"
+
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+
+fail=0
+ok()  { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+bad() { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=1; }
+
+echo "Network (informational — the point is that it does not matter)"
+if curl -s -m 3 -o /dev/null https://huggingface.co 2>/dev/null; then
+  echo "  online; this is the weaker version of the test"
+else
+  echo "  offline; this is the real test"
+fi
+
+echo "Weights resolve locally"
+for p in "$MODEL_ROOT/Qwen3.8-27B-${QUANT}bit" "$MODEL_ROOT/Qwen3.8-27B-MTP-4bit"; do
+  [ -f "$p/config.json" ] && ok "$(basename "$p")" || bad "missing $p"
+done
+
+echo "Stack imports with the hub disabled"
+if [ ! -x "$VENV/bin/python" ]; then
+  bad "no venv at $VENV — run install.sh"
+else
+"$VENV/bin/python" - <<'PY' || fail=1
+import os, sys
+assert os.environ.get("HF_HUB_OFFLINE") == "1", "HF_HUB_OFFLINE not set"
+import mlx, mlx_vlm
+print(f"  \033[32m✓\033[0m mlx {mlx.__version__}, mlx-vlm {mlx_vlm.__version__}")
+PY
+fi
+
+echo "Local generation"
+if ! curl -s -m 5 "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
+  bad "no server on 127.0.0.1:$PORT — qwen-serve start $QUANT, then re-run"
+else
+  RESP=$(curl -s -m 300 "http://127.0.0.1:$PORT/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d '{"messages":[{"role":"user","content":"Reply with exactly: OFFLINE OK"}],
+         "max_tokens":600,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
+  if printf '%s' "$RESP" | grep -q "OFFLINE OK"; then
+    ok "generated with HF_HUB_OFFLINE=1"
+  else
+    bad "generation failed: $(printf '%s' "$RESP" | head -c 200)"
+  fi
+fi
+
+echo
+if [ $fail -eq 0 ]; then echo "OFFLINE CHECK PASSED — no network required"
+else echo "OFFLINE CHECK FAILED"; exit 1; fi

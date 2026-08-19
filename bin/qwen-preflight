@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Check the machine before you serve. Every line here corresponds to something
+# that actually costs you speed, memory, or an afternoon.
+#
+# Usage:  qwen-preflight [4|8]
+set -uo pipefail
+
+QUANT="${1:-${QWEN_QUANT:-8}}"
+VENV="${QWEN_VENV:-$HOME/.venvs/mlx}"
+MODEL_ROOT="${QWEN_MODEL_ROOT:-$HOME/models}"
+
+fail=0
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=1; }
+
+echo "Machine"
+CPU=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
+case "$CPU" in
+  *"Apple M"*) ok "$CPU" ;;
+  *) bad "not Apple Silicon: $CPU" ;;
+esac
+
+# Rosetta halves throughput with no error message. A venv built under an x86
+# shell inherits it silently, which is the usual way people end up here.
+if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = "1" ]; then
+  bad "running under Rosetta — rebuild the venv from a native arm64 shell"
+else
+  ok "native arm64"
+fi
+
+RAM=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+case "$QUANT" in
+  8) [ "$RAM" -ge 64 ] && ok "${RAM} GB unified (8-bit needs 64+)" \
+                       || bad "${RAM} GB unified; 8-bit needs 64+. Use quant 4." ;;
+  4) [ "$RAM" -ge 32 ] && ok "${RAM} GB unified (4-bit needs 32+)" \
+                       || bad "${RAM} GB unified; 4-bit needs 32+" ;;
+  *) bad "unknown quant '$QUANT' (expected 4 or 8)" ;;
+esac
+
+echo "OS"
+PROD=$(sw_vers -productVersion); BUILD=$(sw_vers -buildVersion)
+# docs/STABILITY.md names the macOS update as the only mitigation that changes
+# kernel driver code. Nothing else in the repo checked it, so this does.
+case "$PROD" in
+  26.6*|26.7*|26.8*|26.9*|27.*|28.*)
+    ok "macOS $PROD ($BUILD) — at or past 26.6.1" ;;
+  *)
+    warn "macOS $PROD ($BUILD) — 26.5.x and earlier panicked ~daily under sustained load (IOGPUMemory.cpp:550). See docs/STABILITY.md" ;;
+esac
+
+echo "Runtime"
+if [ -x "$VENV/bin/python" ]; then
+  ok "venv $VENV"
+  "$VENV/bin/python" - <<'PY'
+import importlib
+try:
+    import json, os, pathlib
+    root = pathlib.Path(__file__).resolve()
+except Exception:
+    pass
+for mod in ("mlx", "mlx_vlm"):
+    try:
+        print(f"  \033[32m✓\033[0m {mod} {importlib.import_module(mod).__version__}")
+    except Exception as e:
+        print(f"  \033[31m✗\033[0m {mod}: {e}")
+PY
+  echo "     (versions this repo measured are in VERSIONS.md)"
+else
+  bad "no venv at $VENV — run install.sh"
+fi
+
+echo "Weights"
+for p in "$MODEL_ROOT/Qwen3.8-27B-${QUANT}bit" "$MODEL_ROOT/Qwen3.8-27B-MTP-4bit"; do
+  if [ -f "$p/config.json" ]; then
+    ok "$(basename "$p")  $(du -sh "$p" 2>/dev/null | cut -f1)"
+  else
+    bad "missing $p"
+  fi
+done
+
+echo "Disk"
+AVAIL=$(df -g "$HOME" | awk 'NR==2{print $4}')
+[ "$AVAIL" -ge 20 ] && ok "${AVAIL} GB free" || warn "${AVAIL} GB free (models want 16-30 GB)"
+
+echo
+if [ $fail -eq 0 ]; then echo "preflight PASSED — qwen-serve start $QUANT"
+else echo "preflight FAILED"; exit 1; fi

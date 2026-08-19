@@ -51,17 +51,23 @@ $(printf '\033[32mInstalled.\033[0m') Now fetch the models you want:
 
   # 4-bit, 16 GB, the everyday one
   hf download mlx-community/Qwen3.8-27B-4bit \\
+    --revision 3e6447f082e89cc7f0bc6e5441afd38dfce760ff \\
     --local-dir ~/models/Qwen3.8-27B-4bit
 
   # MTP drafter, 253 MB, doubles decode speed, works with BOTH quants
   hf download mlx-community/Qwen3.8-27B-MTP-4bit \\
+    --revision b643c01b6d3b094e325edb6ebd832e16c486c575 \\
     --local-dir ~/models/Qwen3.8-27B-MTP-4bit
+
+  # --revision pins the exact weights these benchmarks used. mlx-community
+  # re-quantizes in place, so the repo id alone is not a version. See VERSIONS.md.
 EOF
 
 if [ "$RAM_GB" -ge 64 ]; then
 cat <<EOF
   # 8-bit, 28 GB, optional
   hf download mlx-community/Qwen3.8-27B-8bit \\
+    --revision 815b83c0df8ffd1d1b5244cf75fd6ef14fca9ef9 \\
     --local-dir ~/models/Qwen3.8-27B-8bit
 EOF
 fi
@@ -70,8 +76,10 @@ cat <<EOF
 
 Then:
 
+  qwen-preflight 4        # machine, OS, Rosetta, weights, versions
   qwen-serve start 4
   qq "hello"
+  qwen-offline-check 4    # turn off the Wi-Fi first, that is the point
 
 Optional, for double-click launchers:
 
