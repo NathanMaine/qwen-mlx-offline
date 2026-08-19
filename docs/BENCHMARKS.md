@@ -147,7 +147,7 @@ generation (tg); runs a coherence check; reports mean ± stdev.
 ```bash
 uvx llama-benchy \
   --base-url http://127.0.0.1:8080/v1 \
-  --model /Users/nmaine/models/Qwen3.8-27B-4bit \
+  --model ~/models/Qwen3.8-27B-4bit \
   --pp 2048 --tg 128 --depth 0 8192 --runs 3 \
   --extra-body '{"chat_template_kwargs":{"enable_thinking":false}}'
 ```
